@@ -19,10 +19,11 @@ class SimulationArea:
         self.window.bgcolor(colour)
 
         #Numpy Arrays determining physics of Simulation Area
-        if np.array_equal(boundary.shape, vector_field.shape) & np.array_equal(boundary.shape, vector_field.shape)
-        self.boundary = boundary
-        self.vector_field = vector_field
-        self.concentration = concentration
+        if np.array_equal(boundary.shape, vector_field.shape) and np.array_equal(boundary.shape, vector_field.shape):
+            if np.array_equal(boundary.shape, )
+            self.boundary = boundary
+            self.vector_field = vector_field
+            self.concentration = concentration
 
         # Define the cell grid
         self.cell_grid = cell_grid
