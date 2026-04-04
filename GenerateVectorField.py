@@ -1,35 +1,37 @@
 """
-Generate a smooth 2D vector field from a collision image and user-drawn arrows.
+Generate a 2D vector field from a collision image using a Poisson fluidics model.
+
+Black (or near-black) pixels are solid walls with Dirichlet ``phi = 0``. You place
+**source** cells on traversable pixels; the steady Poisson equation
+``∇²φ = -ρ`` is solved on the grid (ρ > 0 at sources), then velocity is
+``v = -∇φ``. This behaves like Darcy / steady diffusion from injection points
+absorbed at walls.
 
 Conventions
 -----------
-- Image: black (or near-black) pixels are obstacles; brighter pixels are traversable.
 - Output array shape ``(height, width, 2)``, dtype float64:
   - ``[..., 0]`` = vector_x (positive = right)
   - ``[..., 1]`` = vector_y (positive = down)
-- Obstacle cells are set to ``(0, 0)``.
+- Wall cells are set to ``(0, 0)``.
 
 Interactive controls (matplotlib window)
 ----------------------------------------
-- Click-drag: draw a flow arrow (both endpoints must lie on traversable pixels).
-- Enter / Return: build the field from all arrows and close the figure.
-- z: undo last arrow
-- c: clear all arrows
+- Left click: toggle a flow source on/off at that traversable pixel.
+- Enter / Return: solve and close the figure.
+- z: remove last placed source
+- c: clear all sources
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from typing import Optional, Tuple
+from typing import Set, Tuple
 
 import numpy as np
 from PIL import Image
 
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
-from scipy import ndimage
-from scipy.interpolate import RBFInterpolator, griddata
 
 
 def load_image_and_free_mask(
@@ -71,97 +73,120 @@ def _pixel_free(free: np.ndarray, x: float, y: float) -> bool:
     return bool(free[i, j])
 
 
-def sample_arrow_segment(
-    x0: float,
-    y0: float,
-    x1: float,
-    y1: float,
+def solve_poisson_sor(
     free: np.ndarray,
-    sample_spacing: float = 3.0,
-) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
-    """
-    Sample unit direction along segment; skip if endpoints not free.
-
-    Returns (xs, ys, vxs, vys) or None if invalid.
-    """
-    if not (_pixel_free(free, x0, y0) and _pixel_free(free, x1, y1)):
-        return None
-    dx, dy = x1 - x0, y1 - y0
-    length = float(np.hypot(dx, dy))
-    if length < 1e-6:
-        return None
-    ux, uy = dx / length, dy / length
-    n = max(1, int(np.ceil(length / sample_spacing)))
-    t = np.linspace(0.0, 1.0, n)
-    xs = x0 + t * dx
-    ys = y0 + t * dy
-    vxs = np.full(n, ux, dtype=np.float64)
-    vys = np.full(n, uy, dtype=np.float64)
-    return xs, ys, vxs, vys
-
-
-def _rbf_grid(
-    xs: np.ndarray,
-    ys: np.ndarray,
-    values: np.ndarray,
-    height: int,
-    width: int,
-    kernels: Tuple[str, ...] = ("thin_plate_spline", "linear", "cubic"),
+    rho: np.ndarray,
+    max_iters: int = 80_000,
+    tol: float = 1e-5,
+    omega: float = 1.85,
 ) -> np.ndarray:
-    """Interpolate scattered values to (height, width) grid."""
-    points = np.column_stack([xs, ys])
-    xi = np.arange(width, dtype=np.float64)
-    yi = np.arange(height, dtype=np.float64)
-    X, Y = np.meshgrid(xi, yi, indexing="xy")
-    grid_pts = np.column_stack([X.ravel(), Y.ravel()])
-    for kernel in kernels:
-        try:
-            rbf = RBFInterpolator(points, values, kernel=kernel)
-            out = rbf(grid_pts).reshape(height, width)
-            return out
-        except (np.linalg.LinAlgError, ValueError):
-            continue
-    out = griddata(
-        points,
-        values,
-        (X, Y),
-        method="linear",
-        fill_value=0.0,
-    )
-    if np.any(np.isnan(out)):
-        out = np.nan_to_num(out, nan=0.0)
-    return out.astype(np.float64)
+    """
+    Solve ∇²φ = -ρ on traversable cells, φ = 0 on walls (5-point stencil, h = 1).
+
+    Wall neighbors contribute 0 to the neighbor sum; denominator is always 4.
+    """
+    h, w = free.shape
+    phi = np.zeros((h, w), dtype=np.float64)
+    rho = np.asarray(rho, dtype=np.float64)
+
+    for _ in range(max_iters):
+        delta_max = 0.0
+        for i in range(h):
+            for j in range(w):
+                if not free[i, j]:
+                    phi[i, j] = 0.0
+                    continue
+                s = 0.0
+                for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    ni, nj = i + di, j + dj
+                    if ni < 0 or ni >= h or nj < 0 or nj >= w or not free[ni, nj]:
+                        s += 0.0
+                    else:
+                        s += phi[ni, nj]
+                new_phi = (s + rho[i, j]) / 4.0
+                old = phi[i, j]
+                blended = (1.0 - omega) * old + omega * new_phi
+                d = abs(blended - old)
+                if d > delta_max:
+                    delta_max = d
+                phi[i, j] = blended
+        if delta_max < tol:
+            break
+    return phi
 
 
-def build_vector_field_from_samples(
-    xs: np.ndarray,
-    ys: np.ndarray,
-    vxs: np.ndarray,
-    vys: np.ndarray,
+def velocity_from_phi(phi: np.ndarray, free: np.ndarray) -> np.ndarray:
+    """
+    v = -∇φ with one-sided differences where a neighbor is a wall (φ = 0 there).
+    Returns (H, W, 2).
+    """
+    pw = np.where(free, phi, 0.0)
+    h, w = free.shape
+
+    pl = np.zeros_like(pw)
+    pr = np.zeros_like(pw)
+    pu = np.zeros_like(pw)
+    pd = np.zeros_like(pw)
+    pl[:, 1:] = pw[:, :-1]
+    pr[:, :-1] = pw[:, 1:]
+    pu[1:, :] = pw[:-1, :]
+    pd[:-1, :] = pw[1:, :]
+
+    left_f = np.zeros_like(free, dtype=bool)
+    left_f[:, 1:] = free[:, :-1]
+    right_f = np.zeros_like(free, dtype=bool)
+    right_f[:, :-1] = free[:, 1:]
+    up_f = np.zeros_like(free, dtype=bool)
+    up_f[1:, :] = free[:-1, :]
+    down_f = np.zeros_like(free, dtype=bool)
+    down_f[:-1, :] = free[1:, :]
+
+    ddx = np.zeros_like(pw)
+    both_x = left_f & right_f & free
+    only_l = (~right_f) & left_f & free
+    only_r = (~left_f) & right_f & free
+    ddx[both_x] = (pr[both_x] - pl[both_x]) * 0.5
+    ddx[only_l] = pw[only_l] - pl[only_l]
+    ddx[only_r] = pr[only_r] - pw[only_r]
+
+    ddy = np.zeros_like(pw)
+    both_y = up_f & down_f & free
+    only_u = (~down_f) & up_f & free
+    only_d = (~up_f) & down_f & free
+    ddy[both_y] = (pd[both_y] - pu[both_y]) * 0.5
+    ddy[only_u] = pw[only_u] - pu[only_u]
+    ddy[only_d] = pd[only_d] - pw[only_d]
+
+    vx = -ddx
+    vy = -ddy
+    vx = np.where(free, vx, 0.0)
+    vy = np.where(free, vy, 0.0)
+    return np.stack([vx, vy], axis=-1)
+
+
+def build_vector_field_from_fluidics(
     free: np.ndarray,
-    blur_sigma: float = 1.5,
+    source_cells: Set[Tuple[int, int]],
+    source_strength: float = 1.0,
+    max_iters: int = 80_000,
+    tol: float = 1e-5,
+    sor_omega: float = 1.85,
     unit_vectors: bool = True,
 ) -> np.ndarray:
     """
-    Build (H, W, 2) vector field from scattered (x, y, vx, vy) samples.
+    Run Poisson solve and gradient to produce (H, W, 2) velocity field.
     """
-    height, width = free.shape
-    if xs.size == 0:
-        raise ValueError("No arrow samples to interpolate.")
+    if not source_cells:
+        raise ValueError("At least one source cell is required.")
 
-    vx_grid = _rbf_grid(xs, ys, vxs, height, width)
-    vy_grid = _rbf_grid(xs, ys, vys, height, width)
+    h, w = free.shape
+    rho = np.zeros((h, w), dtype=np.float64)
+    for i, j in source_cells:
+        if 0 <= i < h and 0 <= j < w and free[i, j]:
+            rho[i, j] += float(source_strength)
 
-    field = np.stack([vx_grid, vy_grid], axis=-1)
-
-    if blur_sigma > 0:
-        for c in range(2):
-            blurred = ndimage.gaussian_filter(
-                field[..., c], sigma=blur_sigma, mode="nearest"
-            )
-            field[..., c] = blurred * free.astype(np.float64)
-
-    field[~free] = 0.0
+    phi = solve_poisson_sor(free, rho, max_iters=max_iters, tol=tol, omega=sor_omega)
+    field = velocity_from_phi(phi, free)
 
     if unit_vectors:
         mag = np.linalg.norm(field, axis=-1, keepdims=True)
@@ -172,113 +197,83 @@ def build_vector_field_from_samples(
     return field.astype(np.float64)
 
 
-def collect_arrows_interactive(
+def collect_sources_interactive(
     rgb: np.ndarray,
     free: np.ndarray,
-    sample_spacing: float = 3.0,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Set[Tuple[int, int]]:
     """
-    Show matplotlib UI; return concatenated sample arrays when user presses Enter.
+    Show matplotlib UI; return set of (row, col) source indices when user presses Enter.
     """
     height, width = free.shape
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.imshow(rgb, origin="upper", extent=(0, width, height, 0), aspect="auto")
     ax.set_xlim(0, width)
     ax.set_ylim(height, 0)
-    ax.set_title("Draw arrows (drag). Enter: finish | z: undo | c: clear")
+    ax.set_title(
+        "Left click: toggle source | Enter: solve | z: undo | c: clear all"
+    )
 
-    drag_start: Optional[Tuple[float, float]] = None
-    preview_line: Optional[Line2D] = None
-    state: dict = {"segments": [], "done": False, "_artists": []}
+    state: dict = {
+        "order": [],
+        "set": set(),
+        "done": False,
+        "scatter": None,
+    }
 
-    def redraw_arrows():
-        for artist in state["_artists"]:
-            artist.remove()
-        state["_artists"] = []
-        for (sx, sy, ex, ey) in state["segments"]:
-            ln, = ax.plot([sx, ex], [sy, ey], "c-", lw=2)
-            ann = ax.annotate(
-                "",
-                xy=(ex, ey),
-                xytext=(sx, sy),
-                arrowprops=dict(arrowstyle="->", color="yellow", lw=2),
+    def redraw_sources():
+        if state["scatter"] is not None:
+            state["scatter"].remove()
+            state["scatter"] = None
+        if state["set"]:
+            xs = [j for (i, j) in state["order"]]
+            ys = [i for (i, j) in state["order"]]
+            state["scatter"] = ax.scatter(
+                xs,
+                ys,
+                s=120,
+                c="lime",
+                marker="o",
+                edgecolors="black",
+                linewidths=1.2,
+                zorder=5,
             )
-            state["_artists"].extend([ln, ann])
         fig.canvas.draw_idle()
 
-    def on_press(event):
-        nonlocal drag_start, preview_line
+    def on_click(event):
         if event.inaxes != ax or event.xdata is None or event.ydata is None:
             return
         if event.button != 1:
             return
-        drag_start = (float(event.xdata), float(event.ydata))
-        if preview_line is not None:
-            preview_line.remove()
-            preview_line = None
-        preview_line, = ax.plot(
-            [drag_start[0], drag_start[0]],
-            [drag_start[1], drag_start[1]],
-            "y--",
-            lw=1,
-        )
-        fig.canvas.draw_idle()
-
-    def on_motion(event):
-        nonlocal preview_line
-        if drag_start is None or preview_line is None:
+        j = int(round(event.xdata))
+        i = int(round(event.ydata))
+        if not _pixel_free(free, float(j), float(i)):
             return
-        if event.inaxes != ax or event.xdata is None or event.ydata is None:
-            return
-        preview_line.set_data(
-            [drag_start[0], event.xdata], [drag_start[1], event.ydata]
-        )
-        fig.canvas.draw_idle()
-
-    def on_release(event):
-        nonlocal drag_start, preview_line
-        if drag_start is None:
-            return
-        if event.button != 1:
-            return
-        if event.inaxes != ax or event.xdata is None or event.ydata is None:
-            if preview_line is not None:
-                preview_line.remove()
-                preview_line = None
-            drag_start = None
-            fig.canvas.draw_idle()
-            return
-        x0, y0 = drag_start
-        x1, y1 = float(event.xdata), float(event.ydata)
-        if preview_line is not None:
-            preview_line.remove()
-            preview_line = None
-        drag_start = None
-        if np.hypot(x1 - x0, y1 - y0) < 3.0:
-            fig.canvas.draw_idle()
-            return
-        seg = sample_arrow_segment(x0, y0, x1, y1, free, sample_spacing)
-        if seg is None:
-            fig.canvas.draw_idle()
-            return
-        state["segments"].append((x0, y0, x1, y1))
-        redraw_arrows()
+        key = (i, j)
+        if key in state["set"]:
+            state["set"].discard(key)
+            state["order"] = [p for p in state["order"] if p != key]
+        else:
+            state["set"].add(key)
+            state["order"].append(key)
+        redraw_sources()
 
     def on_key(event):
         if event.key in ("enter", "return"):
+            if not state["set"]:
+                return
             state["done"] = True
             plt.close(fig)
         elif event.key == "z":
-            if state["segments"]:
-                state["segments"].pop()
-                redraw_arrows()
+            if state["order"]:
+                last = state["order"].pop()
+                state["set"].discard(last)
+                redraw_sources()
         elif event.key == "c":
-            state["segments"].clear()
-            redraw_arrows()
+            state["order"].clear()
+            state["set"].clear()
+            redraw_sources()
 
-    fig.canvas.mpl_connect("button_press_event", on_press)
-    fig.canvas.mpl_connect("motion_notify_event", on_motion)
-    fig.canvas.mpl_connect("button_release_event", on_release)
+    fig.canvas.mpl_connect("button_press_event", on_click)
     fig.canvas.mpl_connect("key_press_event", on_key)
 
     plt.show()
@@ -286,53 +281,43 @@ def collect_arrows_interactive(
     if not state["done"]:
         raise RuntimeError("Window closed before finishing (press Enter to compute).")
 
-    if not state["segments"]:
-        raise ValueError("No valid arrows were drawn.")
+    if not state["set"]:
+        raise ValueError("No sources placed.")
 
-    xs_list, ys_list, vxs_list, vys_list = [], [], [], []
-    for (x0, y0, x1, y1) in state["segments"]:
-        seg = sample_arrow_segment(x0, y0, x1, y1, free, sample_spacing)
-        if seg is None:
-            continue
-        xa, ya, vxa, vya = seg
-        xs_list.append(xa)
-        ys_list.append(ya)
-        vxs_list.append(vxa)
-        vys_list.append(vya)
-
-    if not xs_list:
-        raise ValueError("No valid arrow samples after redraw.")
-
-    return (
-        np.concatenate(xs_list),
-        np.concatenate(ys_list),
-        np.concatenate(vxs_list),
-        np.concatenate(vys_list),
-    )
+    return set(state["set"])
 
 
 def generate_vector_field(
     image_path: str,
     threshold: int = 16,
-    blur_sigma: float = 1.5,
     unit_vectors: bool = True,
-    sample_spacing: float = 3.0,
+    source_strength: float = 1.0,
+    max_iters: int = 80_000,
+    tol: float = 1e-5,
+    sor_omega: float = 1.85,
 ) -> np.ndarray:
     """
-    Load image, open GUI to draw arrows, return (H, W, 2) vector field.
+    Load image, open GUI to place sources, solve Poisson, return (H, W, 2) field.
     """
     rgb, free = load_image_and_free_mask(image_path, threshold=threshold)
-    xs, ys, vxs, vys = collect_arrows_interactive(
-        rgb, free, sample_spacing=sample_spacing
-    )
-    return build_vector_field_from_samples(
-        xs, ys, vxs, vys, free, blur_sigma=blur_sigma, unit_vectors=unit_vectors
+    sources = collect_sources_interactive(rgb, free)
+    return build_vector_field_from_fluidics(
+        free,
+        sources,
+        source_strength=source_strength,
+        max_iters=max_iters,
+        tol=tol,
+        sor_omega=sor_omega,
+        unit_vectors=unit_vectors,
     )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Draw flow arrows on a collision image; save a (H,W,2) vector field."
+        description=(
+            "Place fluid sources on a collision image; solve Poisson; "
+            "save a (H,W,2) vector field (v = -grad phi)."
+        )
     )
     parser.add_argument("--image", required=True, help="Path to input image")
     parser.add_argument(
@@ -347,21 +332,33 @@ def main() -> int:
         help="Luminance threshold (0-255); pixels <= this are obstacles (default: 16)",
     )
     parser.add_argument(
-        "--blur-sigma",
-        type=float,
-        default=1.5,
-        help="Gaussian blur sigma on vx/vy (0 to disable, default: 1.5)",
-    )
-    parser.add_argument(
         "--no-unit",
         action="store_true",
         help="Do not normalize to unit vectors on traversable cells",
     )
     parser.add_argument(
-        "--sample-spacing",
+        "--source-strength",
         type=float,
-        default=3.0,
-        help="Pixels between samples along each arrow (default: 3)",
+        default=1.0,
+        help="Per-source rho value in Poisson RHS (default: 1.0)",
+    )
+    parser.add_argument(
+        "--max-iters",
+        type=int,
+        default=80_000,
+        help="Max SOR iterations (default: 80000)",
+    )
+    parser.add_argument(
+        "--tol",
+        type=float,
+        default=1e-5,
+        help="SOR stopping tolerance on max cell change (default: 1e-5)",
+    )
+    parser.add_argument(
+        "--sor-omega",
+        type=float,
+        default=1.85,
+        help="SOR relaxation weight in (1,2) (default: 1.85)",
     )
     args = parser.parse_args()
 
@@ -369,9 +366,11 @@ def main() -> int:
         field = generate_vector_field(
             args.image,
             threshold=args.threshold,
-            blur_sigma=args.blur_sigma,
             unit_vectors=not args.no_unit,
-            sample_spacing=args.sample_spacing,
+            source_strength=args.source_strength,
+            max_iters=args.max_iters,
+            tol=args.tol,
+            sor_omega=args.sor_omega,
         )
     except (ValueError, RuntimeError) as e:
         print(e, file=sys.stderr)
