@@ -1,7 +1,8 @@
 """
 Render a saved vector field (H, W, 2) as a static image.
 
-Expects the same layout as :mod:`GenerateVectorField`: index ``[i, j, 0]`` is x-velocity
+Expects the same layout as fields from ``GenerateVectorFieldFluid`` / ``GenerateVectorFieldArrows``:
+index ``[i, j, 0]`` is x-velocity
 at row ``i``, column ``j`` (x right, y down).
 
 Examples
