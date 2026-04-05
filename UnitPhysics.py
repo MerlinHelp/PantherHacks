@@ -3,7 +3,7 @@ import random
 import turtle
 
 class SimulationArea:
-    def __init__(self, width, height, boundary, vector_field, concentration,colour="white", cell_grid=(1, 1)):
+    def __init__(self, width, height, boundary=None, vector_field=None, concentration=None,colour="white", cell_grid=(1, 1)):
         self.width = width
         self.height = height
         # Define the edges of the simulation area as integers
@@ -17,12 +17,14 @@ class SimulationArea:
         self.window.setup(width, height)
         self.window.tracer(0)
         self.window.bgcolor(colour)
+        self.window.bgpic("watershed.png")
 
         #Numpy Arrays determining physics of Simulation Area
-        if np.array_equal(boundary.shape, vector_field.shape) & np.array_equal(boundary.shape, vector_field.shape)
+
         self.boundary = boundary
         self.vector_field = vector_field
         self.concentration = concentration
+
 
         # Define the cell grid
         self.cell_grid = cell_grid
@@ -67,22 +69,22 @@ class Particle:
         if position is None:
             position = [
                 random.randint(
-                    self.simulation_area.left_edge,
-                    self.simulation_area.right_edge,
+                    self.simulation_area.left_edge // 2,
+                    self.simulation_area.right_edge // 2,
                 ),
                 random.randint(
-                    self.simulation_area.bottom_edge,
-                    self.simulation_area.top_edge,
+                    self.simulation_area.bottom_edge // 2,
+                    self.simulation_area.top_edge // 2,
                 ),
             ]
         self.position = position
         if velocity is None:
             velocity = [
                 random.randint(
-                    -self.MAX_VELOCITY * 10, self.MAX_VELOCITY * 10
+                    -self.MAX_VELOCITY * 0, self.MAX_VELOCITY * 0
                 ) / 10,
                 random.randint(
-                    -self.MAX_VELOCITY * 10, self.MAX_VELOCITY * 10
+                    -self.MAX_VELOCITY * 0, self.MAX_VELOCITY * 0
                 ) / 10,
             ]
         self.velocity = velocity
@@ -125,9 +127,14 @@ class Particle:
             self.simulation_area.cells[self.cell].append(self)
 
     def move(self):
-        self.velocity[0] = self.simulation_area.vector_field[self.position[0]][self.position[1]][0]
-        self.velocity[1] = self.simulation_area.vector_field[self.position[0]][self.position[1]][1]
+        convertedPosX = -round(self.position[1] - self.simulation_area.height // 2)
+        convertedPosY = round(self.position[0] - self.simulation_area.width // 2)
 
+
+        self.velocity[0] = self.simulation_area.vector_field[convertedPosX][convertedPosY][0] 
+        self.velocity[1] = self.simulation_area.vector_field[convertedPosX][convertedPosY][1] 
+  
+        
         self.position[0] += self.velocity[0]
         self.position[1] += self.velocity[1]
 
@@ -142,6 +149,11 @@ class Particle:
                 or self.position[1] > self.simulation_area.top_edge
         ):
             self.velocity[1] *= -1
+        """
+        if (self.simulation_area.boundary[convertedPosX][convertedPosY] ):
+            self.velocity[0] *= -1
+            self.velocity[1] *= -1
+        """
 
         self.particle.setposition(self.position)
         self.assign_to_cell()

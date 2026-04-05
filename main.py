@@ -19,8 +19,8 @@ def setup_environment():
         pixel_arr = np.array(img)
         collision_arr = gen_collision_arr(pixel_arr)
         print(collision_arr[0,0])
-    except Exception:
-        print("Failed to open file")
+    except Exception as e:
+        print(e)
         exit(1)
     #watershed_fact = WaterShedFactory(*img_sz)
     #watershed = watershed_fact.watershed_from_img(bgpic=ENVIRONMENT_IMG)
