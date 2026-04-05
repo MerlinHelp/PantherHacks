@@ -1,5 +1,6 @@
 from __future__ import annotations
 import turtle
+import numpy as np
 vec2d = turtle.Vec2D
 
 class WaterShed:
@@ -57,3 +58,13 @@ class WaterShedFactory:
 
 def gen_collision_arr(pixels):
     return (pixels == (0, 0, 0, 255)).all(axis=-1)
+
+def gen_concentration_arr(pixels):
+    return np.clip(
+        (
+            (pixels[:, :, 0] - (pixels[:, :, 1] + pixels[:, :, 2]) / 2.0)
+                * (pixels[:, :, 3] / 255)
+        ),
+        0,
+        255
+    )
