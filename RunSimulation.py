@@ -1,13 +1,17 @@
 # run_demo.py
  
 from collections import deque
-
 from UnitPhysics import SimulationArea, Particle
+import numpy as np
 
-n_particles = 50
+n_particles = 500
+vector_array = np.load('field.npy')
+boundary_array = np.load('collision.npy')
+concentration_array = np.load('concentration.npy')
 
-simulation_area = SimulationArea(1000, 700, cell_grid=(10, 7))
+simulation_area = SimulationArea(1500, 852, vector_field=vector_array, boundary = boundary_array, concentration = concentration_array, cell_grid=(10, 7))
 simulation_area.set_title("Diffusion Demo")
+
 
 particles = []
 for _ in range(n_particles):
