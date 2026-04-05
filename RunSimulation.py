@@ -1,13 +1,17 @@
 # run_demo.py
  
-from collections import deque
 from UnitPhysics import SimulationArea, Particle
+from EnvironmentGeneration import gen_concentration_arr, gen_collision_arr
 import numpy as np
+from PIL import Image
 
 n_particles = 500
 vector_array = np.load('field.npy')
-boundary_array = np.load('collision.npy')
-concentration_array = np.load('concentration.npy')
+
+img = Image.open("watershed.png")
+img_arr = np.array(img)
+boundary_array = gen_collision_arr or np.load('collision.npy')
+concentration_array = gen_concentration_arr or np.load('concentration.npy')
 
 simulation_area = SimulationArea(1500, 852, vector_field=vector_array, boundary = boundary_array, concentration = concentration_array, cell_grid=(10, 7))
 simulation_area.set_title("Diffusion Demo")
