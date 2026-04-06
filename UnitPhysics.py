@@ -2,38 +2,45 @@ import numpy as np
 import random
 import turtle
 
+
 class SimulationArea:
-    def __init__(self, width, height, boundary=None, vector_field=None, concentration=None,colour="white", cell_grid=(1, 1)):
+    def __init__(
+        self,
+        width: float | int,
+        height: float | int,
+        boundary: np.ndarray | None = None,
+        vector_field: np.ndarray | None = None,
+        concentration: np.ndarray | None = None,
+        colour: str = "white",
+        cell_grid: tuple[int, int] = (1, 1),
+    ):
         self.width = width
         self.height = height
         # Define the edges of the simulation area as integers
         # (we'll need them as integers later)
-        self.left_edge = -width // 2
-        self.right_edge = width // 2
-        self.top_edge = height // 2
-        self.bottom_edge = -height // 2
+        self.right_edge: int = int(width // 2)
+        self.left_edge: int = -self.right_edge
+        self.top_edge: int = int(height // 2)
+        self.bottom_edge: int = -self.top_edge
         # Create a turtle screen object
         self.window = turtle.Screen()
         self.window.setup(width, height)
         self.window.tracer(0)
         self.window.bgcolor(colour)
-        self.window.bgpic("watershed.png")
+        self.window.bgpic("watershed8.png")
 
-        #Numpy Arrays determining physics of Simulation Area
+        # Numpy Arrays determining physics of Simulation Area
 
         self.boundary = boundary
         self.vector_field = vector_field
         self.concentration = concentration
-
 
         # Define the cell grid
         self.cell_grid = cell_grid
         self.cell_width = width / cell_grid[0]
         self.cell_height = height / cell_grid[1]
         self.cells = {
-            (i, j): []
-            for i in range(cell_grid[0])
-            for j in range(cell_grid[1])
+            (i, j): [] for i in range(cell_grid[0]) for j in range(cell_grid[1])
         }
 
     def update(self):
@@ -48,6 +55,7 @@ class SimulationArea:
 
     def get_sequence_of_cells(self):
         return self.cells.values()
+
 
 class Particle:
     MAX_VELOCITY = 4
@@ -80,18 +88,15 @@ class Particle:
         self.position = position
         if velocity is None:
             velocity = [
-                random.randint(
-                    -self.MAX_VELOCITY * 0, self.MAX_VELOCITY * 0
-                ) / 10,
-                random.randint(
-                    -self.MAX_VELOCITY * 0, self.MAX_VELOCITY * 0
-                ) / 10,
+                random.randint(-self.MAX_VELOCITY * 0, self.MAX_VELOCITY * 0) / 10,
+                random.randint(-self.MAX_VELOCITY * 0, self.MAX_VELOCITY * 0) / 10,
             ]
         self.velocity = velocity
 
         self.in_collision_with = []
         self.cell = None
         self.assign_to_cell()
+        self.reached_source = False
 
     def assign_to_cell(self):
         # Convert the x and y coordinates to cell indices i and j
@@ -112,7 +117,7 @@ class Particle:
             cell_j = 0
         elif cell_j >= self.simulation_area.cell_grid[1]:
             cell_j = self.simulation_area.cell_grid[1] - 1
-        
+
         # Add the particle if it's not already in the
         # cell (first iteration)
         if not self.cell:
@@ -126,36 +131,35 @@ class Particle:
             # Add the particle to the new cell
             self.simulation_area.cells[self.cell].append(self)
 
-    def move(self):
-        convertedPosX = -round(self.position[1] - self.simulation_area.height // 2)
-        convertedPosY = round(self.position[0] - self.simulation_area.width // 2)
-
-
-        self.velocity[0] = self.simulation_area.vector_field[convertedPosX][convertedPosY][0] 
-        self.velocity[1] = self.simulation_area.vector_field[convertedPosX][convertedPosY][1] 
-  
-        
-        self.position[0] += self.velocity[0]
-        self.position[1] += self.velocity[1]
+    def move(
+        self,
+        new_pos: list[float] | None = None,
+        new_velocity: list[float] | None = None,
+    ):
+        if new_pos is not None:
+            self.position = new_pos
+        if new_velocity is not None:
+            self.velocity = new_velocity
 
         # Bounce off the edges
         if (
-                self.position[0] < self.simulation_area.left_edge
-                or self.position[0] > self.simulation_area.right_edge
+            self.position[0] < self.simulation_area.left_edge
+            or self.position[0] > self.simulation_area.right_edge
         ):
             self.velocity[0] *= -1
         if (
-                self.position[1] < self.simulation_area.bottom_edge
-                or self.position[1] > self.simulation_area.top_edge
+            self.position[1] < self.simulation_area.bottom_edge
+            or self.position[1] > self.simulation_area.top_edge
         ):
             self.velocity[1] *= -1
+
         """
         if (self.simulation_area.boundary[convertedPosX][convertedPosY] ):
             self.velocity[0] *= -1
             self.velocity[1] *= -1
         """
 
-        self.particle.setposition(self.position)
+        self.particle.setposition(*self.position)
         self.assign_to_cell()
 
     def check_collision(self, other_particle):

@@ -1,69 +1,42 @@
 from __future__ import annotations
-import turtle
 import numpy as np
-vec2d = turtle.Vec2D
 
-class WaterShed:
-    def __init__(
-        self,
-        width: int | float,
-        height: int | float,
-        bgpic: str="",
-        color: str=""
-    ):
-        self.width = width
-        self.height = height
-        self.calculate_edges()
-        self.window = turtle.Screen()
-        if bgpic:
-            self.window.bgpic(bgpic)
-        self.color = color
-        self.window.setup(int(width), int(height))
-
-    def calculate_edges(self):
-        self.left_x = int(-self.width // 2)
-        self.right_x = -self.left_x
-        self.top_y = int(self.height // 2)
-        self.bot_y = -self.top_y
-
-    def update(self):
-        self.window.update()
-
-    def run(self):
-        self.window.mainloop()
-
-class WaterShedFactory:
-    def __init__(
-        self,
-        width: int | float,
-        height: int | float,
-    ):
-        self.width = width
-        self.height = height
-
-    def watershed_from_img(
-        self,
-        width=None,
-        height=None,
-        bgpic=""
-    ):
-        if width is None:
-            width = self.width
-        if height is None:
-            height = self.height
-
-        watershed = WaterShed(width, height, bgpic)
-
-        return watershed
-
-def gen_collision_arr(pixels):
+def gen_collision_arr(pixels) -> np.ndarray:
     return (pixels == (0, 0, 0, 255)).all(axis=-1)
 
-def gen_concentration_arr(pixels):
+def gen_red_concentration_arr(pixels) -> np.ndarray:
+    R = pixels[:, :, 0].astype(float)
+    G = pixels[:, :, 1].astype(float)
+    B = pixels[:, :, 2].astype(float)
+    A = pixels[:, :, 3].astype(float)
+
+    return np.clip((R - (G + B)/2.0) * (A / 255.0), 0, 255)
+
+def gen_blue_concentration_arr(pixels) -> np.ndarray:
+    R = pixels[:, :, 0].astype(float)
+    G = pixels[:, :, 1].astype(float)
+    B = pixels[:, :, 2].astype(float)
+    A = pixels[:, :, 3].astype(float)
+
+    return np.clip((B - (R + G)/2.0) * (A / 255.0), 0, 255)
+
+def gen_concentration_arr(pixels) -> np.ndarray:
+    R = pixels[:, :, 0].astype(float)
+    G = pixels[:, :, 1].astype(float)
+    B = pixels[:, :, 2].astype(float)
+    A = pixels[:, :, 3].astype(float)
+
+    R_WEIGHT = -30
+    G_WEIGHT = 90
+    B_WEIGHT = 90
+    A_WEIGHT = 100
+
     return np.clip(
         (
-            (pixels[:, :, 0] - (pixels[:, :, 1] + pixels[:, :, 2]) / 2.0)
-                * (pixels[:, :, 3] / 255)
+            R/255.0 * R_WEIGHT +
+            G/255.0 * G_WEIGHT +
+            B/255.0 * B_WEIGHT +
+            255.0/A * A_WEIGHT
         ),
         0,
         255
